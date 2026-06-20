@@ -1,0 +1,5 @@
+#ana dosya requirements.txt
+streamlit
+google-generativeai
+python-dotenv
+google.generativeai
