@@ -143,6 +143,41 @@ text = st.text_area(
 API_URL = "http://127.0.0.1:8000/predict"
 API_KEY = os.getenv("API_KEY", "sentiment_analysis_secure_key_2026")
 
+@st.cache_resource
+def get_fallback_model():
+    from transformers import AutoTokenizer, AutoModelForSequenceClassification
+    import torch
+    
+    # Try model_turkish directory or fallback to HF hub
+    model_dir = os.path.join(os.path.dirname(__file__), "backend", "model_turkish")
+    if not os.path.isdir(model_dir):
+        model_dir = os.path.join(os.path.dirname(__file__), "..", "backend", "model_turkish")
+        if not os.path.isdir(model_dir):
+            model_dir = "azizbarank/distilbert-base-turkish-cased-sentiment"
+            
+    tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    model = AutoModelForSequenceClassification.from_pretrained(model_dir)
+    return tokenizer, model
+
+def predict_local(text):
+    import torch
+    import torch.nn.functional as F
+    
+    tokenizer, model = get_fallback_model()
+    inputs = tokenizer(
+        text,
+        padding=True,
+        truncation=True,
+        return_tensors="pt"
+    )
+    with torch.no_grad():
+        outputs = model(**inputs)
+    probs = F.softmax(outputs.logits, dim=1)
+    return {
+        "negative": float(probs[0][0]),
+        "positive": float(probs[0][1])
+    }
+
 st.markdown('</div>', unsafe_allow_html=True)
 
 if st.button("Duygu Durumunu Analiz Et"):
@@ -150,47 +185,59 @@ if st.button("Duygu Durumunu Analiz Et"):
         st.warning("Lütfen analiz etmek için bir metin girin.")
     else:
         headers = {"x-api-key": API_KEY}
-        with st.spinner("Yapay zeka yorumu analiz ediyor..."):
+        with st.spinner("Yapay zeka yorumu analiz ediyor... (İlk çalıştırmada model indirilebilir, lütfen bekleyin)"):
+            use_fallback = False
+            result = None
             try:
                 response = requests.post(
                     API_URL,
                     json={"text": text},
-                    headers=headers
+                    headers=headers,
+                    timeout=5
                 )
 
                 if response.status_code == 200:
                     result = response.json()
-                    pos = result['positive']
-                    neg = result['negative']
-                    
-                    st.success("Analiz tamamlandı!")
-                    
-                    # Columns for metrics
-                    st.markdown('<div class="result-container">', unsafe_allow_html=True)
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Pozitif Oran", f"{pos:.2%}")
-                    with col2:
-                        st.metric("Negatif Oran", f"{neg:.2%}")
-                    
-                    # Verdict
-                    st.divider()
-                    if pos > neg:
-                        st.markdown('<div class="sentiment-label-pos">😊 Pozitif Duygu Durumu</div>', unsafe_allow_html=True)
-                        st.write("")
-                        st.markdown("<p style='text-align: center; color: #9ca3af;'>Bu müşteri yorumu genel olarak <strong>olumlu</strong> bir deneyimi ve memnuniyeti ifade ediyor.</p>", unsafe_allow_html=True)
-                    else:
-                        st.markdown('<div class="sentiment-label-neg">😔 Negatif Duygu Durumu</div>', unsafe_allow_html=True)
-                        st.write("")
-                        st.markdown("<p style='text-align: center; color: #9ca3af;'>Bu müşteri yorumu genel olarak <strong>olumsuz</strong> bir deneyimi, şikayeti veya memnuniyetsizliği ifade ediyor.</p>", unsafe_allow_html=True)
-                    st.markdown('</div>', unsafe_allow_html=True)
-                    
                 elif response.status_code == 401:
                     st.error("API Anahtarı hatası (Unauthorized). Lütfen .env dosyanızı veya API Key ayarınızı kontrol edin.")
+                    st.stop()
                 else:
-                    st.error(f"API hatası oluştu. Durum Kodu: {response.status_code}")
-            except Exception as e:
-                st.error(f"Backend sunucusuna bağlanılamadı. Lütfen sunucunun (FastAPI) çalıştığından emin olun. Hata detayı: {e}")
+                    use_fallback = True
+            except requests.exceptions.RequestException:
+                use_fallback = True
+
+            if use_fallback:
+                try:
+                    result = predict_local(text)
+                except Exception as e:
+                    st.error(f"Backend sunucusuna bağlanılamadı ve yerel model yüklenemedi. Hata detayı: {e}")
+                    st.stop()
+
+            if result is not None:
+                pos = result['positive']
+                neg = result['negative']
+                
+                st.success("Analiz tamamlandı!")
+                
+                # Columns for metrics
+                st.markdown('<div class="result-container">', unsafe_allow_html=True)
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Pozitif Oran", f"{pos:.2%}")
+                with col2:
+                    st.metric("Negatif Oran", f"{neg:.2%}")
+                
+                # Verdict
+                st.divider()
+                if pos > neg:
+                    st.markdown('<div class="sentiment-label-pos">😊 Pozitif Duygu Durumu</div>', unsafe_allow_html=True)
+                    st.write("")
+                    st.markdown("<p style='text-align: center; color: #9ca3af;'>Bu müşteri yorumu genel olarak <strong>olumlu</strong> bir deneyimi ve memnuniyeti ifade ediyor.</p>", unsafe_allow_html=True)
+                else:
+                    st.markdown('<div class="sentiment-label-neg">😔 Negatif Duygu Durumu</div>', unsafe_allow_html=True)
+                    st.write("")
+                    st.markdown("<p style='text-align: center; color: #9ca3af;'>Bu müşteri yorumu genel olarak <strong>olumsuz</strong> bir deneyimi, şikayeti veya memnuniyetsizliği ifade ediyor.</p>", unsafe_allow_html=True)
+                st.markdown('</div>', unsafe_allow_html=True)
 
 # Footer
 st.markdown("""
